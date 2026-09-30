@@ -1,4 +1,3 @@
-# tripline wiki
 
 tripline adds guardrails and blame to AI coding agent sessions. It runs locally as a single binary and never touches the network.
 

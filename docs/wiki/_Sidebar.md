@@ -1,6 +1,6 @@
 **tripline**
 
-- [[Home]]
+- [[tripline wiki|tripline-wiki]]
 - [[Installation]]
 - [[Hook setup|Hook-Setup]]
 - [[Rules]]
