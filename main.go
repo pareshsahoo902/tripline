@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +48,9 @@ func main() {
 	case "blame":
 		err = runBlame(args, os.Stdout)
 	case "version", "--version", "-v":
+		if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && bi.Main.Version != "(devel)" && bi.Main.Version != "" {
+			version = strings.TrimPrefix(bi.Main.Version, "v") // go install builds skip ldflags
+		}
 		fmt.Println("tripline", version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
