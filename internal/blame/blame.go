@@ -2,8 +2,6 @@
 package blame
 
 import (
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -12,18 +10,18 @@ import (
 )
 
 type Edit struct {
-	Time    time.Time `json:"time"`
-	Session string    `json:"session"`
-	Tool    string    `json:"tool"`
-	Prompt  string    `json:"prompt"` // last user prompt before the edit
-	Why     string    `json:"why"`    // last assistant text before the edit, within the same prompt
-	Change  string    `json:"change"`
-	Failed  bool      `json:"failed"`
+	Time     time.Time `json:"time"`
+	Session  string    `json:"session"`
+	Tool     string    `json:"tool"`
+	Prompt   string    `json:"prompt"` // last user prompt before the edit
+	Why      string    `json:"why"`    // last assistant text before the edit, within the same prompt
+	Change   string    `json:"change"`
+	Failed   bool      `json:"failed"`
+	Inferred bool      `json:"inferred"` // a shell command that looks like it wrote the file
 }
 
 // Find returns every edit to path in events, in order.
 func Find(events []transcript.Event, path string) []Edit {
-	want := Normalize(path)
 	failed := map[string]bool{}
 	for _, e := range events {
 		if e.Kind == transcript.ToolResult && e.IsError {
@@ -41,12 +39,16 @@ func Find(events []transcript.Event, path string) []Edit {
 				why[e.Session] = e.Text
 			}
 		case transcript.ToolUse:
-			if p := e.WritePath(); p != "" && Normalize(p) == want {
-				out = append(out, Edit{
-					Time: e.Time, Session: e.Session, Tool: e.Tool,
-					Prompt: prompt[e.Session], Why: why[e.Session],
-					Change: change(e), Failed: failed[e.ToolID],
-				})
+			files, _ := e.Writes()
+			for _, f := range files {
+				if transcript.Match(f, path) {
+					out = append(out, Edit{
+						Time: e.Time, Session: e.Session, Tool: e.Tool,
+						Prompt: prompt[e.Session], Why: why[e.Session],
+						Change: change(e), Failed: failed[e.ToolID], Inferred: e.Shell(),
+					})
+					break
+				}
 			}
 		}
 	}
@@ -61,6 +63,10 @@ func change(e transcript.Event) string {
 		return "wrote " + strconv.Itoa(strings.Count(e.Field("content"), "\n")+1) + " lines"
 	case "MultiEdit":
 		return "multiple edits"
+	case "Delete":
+		return "deleted"
+	case "Bash", "PowerShell":
+		return "$ " + e.Field("command")
 	}
 	return e.Tool
 }
@@ -71,17 +77,4 @@ func firstLine(s string) string {
 		return s[:i] + " …"
 	}
 	return s
-}
-
-// Normalize makes paths comparable: absolute, forward slashes, and lowercase
-// on Windows and macOS, whose default filesystems ignore case.
-func Normalize(p string) string {
-	if abs, err := filepath.Abs(p); err == nil {
-		p = abs
-	}
-	p = filepath.ToSlash(filepath.Clean(p))
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		p = strings.ToLower(p)
-	}
-	return p
 }

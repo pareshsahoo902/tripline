@@ -97,3 +97,66 @@ func TestRisky(t *testing.T) {
 		t.Errorf("PowerShell tool should be checked, got %v", got)
 	}
 }
+
+func TestShellWritesReset(t *testing.T) {
+	// A sed edit between test runs is progress, not a loop.
+	h := []transcript.Event{bash("npm test"), bash("sed -i 's/a/b/' x.js"), bash("npm test"), bash("npm test")}
+	if got := rulesFired(h, bash("npm test"), Default); len(got) != 0 {
+		t.Errorf("shell edit should reset loop, got %v", got)
+	}
+	// A read-only command in between doesn't count as progress.
+	h = []transcript.Event{bash("npm test"), bash("cat x.js"), bash("npm test"), bash("npm test")}
+	if got := rulesFired(h, bash("npm test"), Default); len(got) != 1 || got[0] != "loop" {
+		t.Errorf("want loop, got %v", got)
+	}
+	// Shell writes reset reread for the file they name, or for every file when unknown.
+	for cmd, reset := range map[string]bool{"echo x > /a": true, "echo x > /b": false, "git stash pop": true} {
+		h = []transcript.Event{read("/a"), read("/a"), bash(cmd)}
+		got := rulesFired(h, read("/a"), Default)
+		if reset != (len(got) == 0) {
+			t.Errorf("%q: reset %v, got %v", cmd, reset, got)
+		}
+	}
+}
+
+func TestBudgetCheckpoints(t *testing.T) {
+	usage := func(usd float64) transcript.Event { // Sonnet output at $10/MTok
+		return transcript.Event{Kind: transcript.Text, Model: "claude-sonnet-5-5", Usage: &transcript.Usage{Output: int64(usd * 1e5)}}
+	}
+	done := func(id string) []transcript.Event {
+		return []transcript.Event{
+			{Kind: transcript.ToolUse, Tool: "Bash", ToolID: id, Input: []byte(`{"command":"ls"}`)},
+			{Kind: transcript.ToolResult, ToolID: id},
+		}
+	}
+	c := Config{BudgetUSD: 5}
+	h := append([]transcript.Event{usage(6)}, done("t1")...) // crossed $5 before t1: reported then
+	h = append(h, usage(1))                                  // $7: no new multiple
+	if got := rulesFired(h, bash("ls"), c); len(got) != 0 {
+		t.Errorf("$7 after a $5 checkpoint already passed: got %v", got)
+	}
+	h = append(h, done("t2")...)
+	h = append(h, usage(4)) // $11: passes $10
+	if got := rulesFired(h, bash("ls"), c); len(got) != 1 || got[0] != "budget" {
+		t.Errorf("want budget at $10, got %v", got)
+	}
+	gpt := []transcript.Event{{Kind: transcript.Text, Model: "gpt-5.5", Usage: &transcript.Usage{Output: 1e9}}}
+	if got := rulesFired(gpt, bash("ls"), c); len(got) != 0 {
+		t.Errorf("unpriced models never fire, got %v", got)
+	}
+}
+
+func TestActions(t *testing.T) {
+	c := Default
+	c.Actions = map[string]Action{}
+	if err := ParseActions("risky, budget", Ask, c.Actions); err != nil {
+		t.Fatal(err)
+	}
+	if err := ParseActions("nope", Warn, c.Actions); err == nil {
+		t.Error("unknown rule must fail")
+	}
+	f := Check(nil, bash("git push --force"), c)
+	if len(f) != 1 || f[0].Action != Ask || f[0].Action.String() != "ask" {
+		t.Errorf("got %+v", f)
+	}
+}

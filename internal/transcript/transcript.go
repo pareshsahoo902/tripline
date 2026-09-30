@@ -1,16 +1,22 @@
-// Package transcript parses Claude Code session transcripts (JSONL) into a flat event list.
+// Package transcript parses coding-agent session transcripts (Claude Code,
+// Codex CLI, Cursor) into one flat event list.
+//
+// Tool calls use canonical names so rules and blame work across agents:
+// Bash and PowerShell {command}, Read {file_path}, Edit {file_path,
+// old_string, new_string}, Write {file_path, content}, Delete {file_path},
+// plus Claude Code's MultiEdit and NotebookEdit. Other tools keep the name
+// their agent gives them.
 package transcript
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pareshsahoo902/tripline/internal/shell"
 )
 
 type Kind int
@@ -31,170 +37,74 @@ type Event struct {
 	Time      time.Time
 	Session   string
 	Model     string
+	Cwd       string // working directory of the call, when the agent records it
 	Text      string
 	Tool      string
 	ToolID    string
 	Input     json.RawMessage
 	IsError   bool
-	Usage     *Usage // set on the first event of each API message only
+	Usage     *Usage // set on one event per API response
 	Sidechain bool
 }
 
-type rawLine struct {
-	Type        string    `json:"type"`
-	Timestamp   time.Time `json:"timestamp"`
-	SessionID   string    `json:"sessionId"`
-	IsMeta      bool      `json:"isMeta"`
-	IsSidechain bool      `json:"isSidechain"`
-	Message     *struct {
-		ID      string          `json:"id"`
-		Model   string          `json:"model"`
-		Content json.RawMessage `json:"content"`
-		Usage   *struct {
-			InputTokens              int64 `json:"input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-			CacheCreation            *struct {
-				Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
-				Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
-			} `json:"cache_creation"`
-		} `json:"usage"`
-	} `json:"message"`
-}
-
-type rawBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text"`
-	Thinking  string          `json:"thinking"`
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Input     json.RawMessage `json:"input"`
-	ToolUseID string          `json:"tool_use_id"`
-	IsError   bool            `json:"is_error"`
-}
-
-var (
-	dropTags = regexp.MustCompile(`(?s)<(system-reminder|command-message|local-command-stdout|local-command-caveat)>.*?</(system-reminder|command-message|local-command-stdout|local-command-caveat)>`)
-	keepTags = regexp.MustCompile(`(?s)<(command-name|command-args)>(.*?)</(command-name|command-args)>`)
-)
-
-// cleanPrompt strips the wrapper tags Claude Code adds around slash commands
-// and injected context, keeping the command and its arguments.
-func cleanPrompt(s string) string {
-	s = dropTags.ReplaceAllString(s, "")
-	s = keepTags.ReplaceAllString(s, "$2 ")
-	return strings.TrimSpace(s)
-}
-
-// ParseFile parses the transcript at path.
+// ParseFile parses the transcript at path. Events that carry no time or
+// session id (Cursor records neither) get the file's modification time and
+// base name.
 func ParseFile(path string) ([]Event, error) {
-	f, err := os.Open(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return Parse(f)
+	events := Parse(b)
+	var mod time.Time
+	if info, err := os.Stat(path); err == nil {
+		mod = info.ModTime()
+	}
+	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	for i := range events {
+		if events[i].Time.IsZero() {
+			events[i].Time = mod
+		}
+		if events[i].Session == "" {
+			events[i].Session = id
+		}
+	}
+	return events, nil
 }
 
-// Parse reads JSONL from r. Lines that fail to decode are skipped: a live
-// transcript can end in a partially written line.
-func Parse(r io.Reader) ([]Event, error) {
-	br := bufio.NewReaderSize(r, 1<<20)
-	seen := map[string]bool{}
-	var events []Event
-	for {
-		b, err := br.ReadBytes('\n')
-		if len(bytes.TrimSpace(b)) > 0 {
-			events = appendLine(events, b, seen)
-		}
-		if errors.Is(err, io.EOF) {
-			return events, nil
-		}
-		if err != nil {
-			return events, err
-		}
+// Parse parses a transcript in any supported format, detected from its
+// first line. Lines that fail to decode are skipped: a live transcript can
+// end in a partially written line.
+func Parse(b []byte) []Event {
+	var probe struct {
+		Role    string          `json:"role"`
+		Payload json.RawMessage `json:"payload"`
 	}
+	lines(b, func(l []byte) bool {
+		return json.Unmarshal(l, &probe) != nil // stop at the first valid line
+	})
+	switch {
+	case probe.Payload != nil:
+		return parseCodex(b)
+	case probe.Role != "":
+		return parseCursor(b)
+	}
+	return parseClaude(b)
 }
 
-func appendLine(events []Event, b []byte, seen map[string]bool) []Event {
-	var l rawLine
-	if json.Unmarshal(b, &l) != nil || l.Message == nil || l.IsMeta {
-		return events
-	}
-	base := Event{Time: l.Timestamp, Session: l.SessionID, Model: l.Message.Model, Sidechain: l.IsSidechain}
-
-	switch l.Type {
-	case "user":
-		var s string
-		if json.Unmarshal(l.Message.Content, &s) == nil {
-			if s = cleanPrompt(s); s != "" {
-				e := base
-				e.Kind, e.Text = Prompt, s
-				events = append(events, e)
-			}
-			return events
+// lines calls fn with each non-blank line until fn returns false.
+func lines(b []byte, fn func([]byte) bool) {
+	for len(b) > 0 {
+		var l []byte
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			l, b = b[:i], b[i+1:]
+		} else {
+			l, b = b, nil
 		}
-		var blocks []rawBlock
-		if json.Unmarshal(l.Message.Content, &blocks) != nil {
-			return events
-		}
-		for _, bl := range blocks {
-			e := base
-			switch bl.Type {
-			case "text":
-				if e.Text = cleanPrompt(bl.Text); e.Text == "" {
-					continue
-				}
-				e.Kind = Prompt
-			case "tool_result":
-				e.Kind, e.ToolID, e.IsError = ToolResult, bl.ToolUseID, bl.IsError
-			default:
-				continue
-			}
-			events = append(events, e)
-		}
-
-	case "assistant":
-		var blocks []rawBlock
-		if json.Unmarshal(l.Message.Content, &blocks) != nil {
-			return events
-		}
-		var usage *Usage
-		if u := l.Message.Usage; u != nil && !seen[l.Message.ID] {
-			seen[l.Message.ID] = true
-			usage = &Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens}
-			if c := u.CacheCreation; c != nil && c.Ephemeral5m+c.Ephemeral1h > 0 {
-				usage.CacheWrite5m, usage.CacheWrite1h = c.Ephemeral5m, c.Ephemeral1h
-			} else {
-				usage.CacheWrite5m = u.CacheCreationInputTokens
-			}
-		}
-		for _, bl := range blocks {
-			e := base
-			switch bl.Type {
-			case "text":
-				e.Kind, e.Text = Text, bl.Text
-			case "thinking":
-				if bl.Thinking == "" {
-					continue
-				}
-				e.Kind, e.Text = Text, bl.Thinking
-			case "tool_use":
-				e.Kind, e.Tool, e.ToolID, e.Input = ToolUse, bl.Name, bl.ID, bl.Input
-			default:
-				continue
-			}
-			e.Usage, usage = usage, nil
-			events = append(events, e)
-		}
-		if usage != nil { // message had no kept blocks; keep its usage anyway
-			e := base
-			e.Kind, e.Usage = Text, usage
-			events = append(events, e)
+		if l = bytes.TrimSpace(l); len(l) > 0 && !fn(l) {
+			return
 		}
 	}
-	return events
 }
 
 // Key identifies a tool call by tool name and canonical input.
@@ -218,16 +128,36 @@ func (e Event) Field(name string) string {
 	return s
 }
 
-// WritePath returns the file a file-modifying tool call targets, or "".
-func (e Event) WritePath() string {
+// Writes returns the files a tool call modifies, joined onto the call's
+// working directory when that is known. unknown is true when the call may
+// modify files it doesn't name, such as a shell `git checkout` or `patch`.
+// Shell commands are judged by shell.Writes, a heuristic.
+func (e Event) Writes() (files []string, unknown bool) {
 	if e.Kind != ToolUse {
-		return ""
+		return nil, false
 	}
 	switch e.Tool {
-	case "Edit", "MultiEdit", "Write":
-		return e.Field("file_path")
+	case "Edit", "MultiEdit", "Write", "Delete":
+		files = []string{e.Field("file_path")}
 	case "NotebookEdit":
-		return e.Field("notebook_path")
+		files = []string{e.Field("notebook_path")}
+	case "Bash", "PowerShell":
+		files, unknown = shell.Writes(e.Field("command"))
+	default:
+		return nil, false
 	}
-	return ""
+	out := files[:0]
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+		if e.Cwd != "" && !filepath.IsAbs(f) && !strings.HasPrefix(f, "~") {
+			f = filepath.Join(e.Cwd, f)
+		}
+		out = append(out, f)
+	}
+	return out, unknown
 }
+
+// Shell reports whether the call ran a shell command.
+func (e Event) Shell() bool { return e.Tool == "Bash" || e.Tool == "PowerShell" }

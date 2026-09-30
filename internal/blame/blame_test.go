@@ -23,13 +23,17 @@ func TestFind(t *testing.T) {
 {"type":"assistant","sessionId":"s1","timestamp":"2026-09-30T10:01:01Z","message":{"id":"m3","content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"` + j(strings.ToUpper(file[:1])+file[1:]) + `","content":"a\nb\nc"}}]}}
 {"type":"user","sessionId":"s1","timestamp":"2026-09-30T10:01:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"t3","is_error":true,"content":"denied"}]}}
 `
-	events, err := transcript.Parse(strings.NewReader(jsonl))
-	if err != nil {
-		t.Fatal(err)
+	dir := j(filepath.Dir(file))
+	jsonl += `{"type":"user","sessionId":"s1","timestamp":"2026-09-30T10:02:00Z","message":{"content":"rename the helper everywhere"}}
+{"type":"assistant","sessionId":"s1","cwd":"` + dir + `","timestamp":"2026-09-30T10:02:01Z","message":{"id":"m4","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"sed -i 's/old/new/' auth.go other.go"}}]}}
+{"type":"assistant","sessionId":"s1","cwd":"` + dir + `","timestamp":"2026-09-30T10:02:02Z","message":{"id":"m5","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{"command":"grep -n old auth.go"}}]}}
+`
+	got := Find(transcript.Parse([]byte(jsonl)), "auth.go")
+	if len(got) != 3 {
+		t.Fatalf("got %d edits, want 3: %+v", len(got), got)
 	}
-	got := Find(events, "auth.go")
-	if len(got) != 2 {
-		t.Fatalf("got %d edits, want 2: %+v", len(got), got)
+	if e := got[2]; !e.Inferred || e.Tool != "Bash" || e.Prompt != "rename the helper everywhere" || e.Change != "$ sed -i 's/old/new/' auth.go other.go" {
+		t.Errorf("shell edit: %+v", e)
 	}
 	e := got[0]
 	if e.Prompt != "token expiry is off by one" || e.Why != "Expiry check uses < but needs <=." || e.Failed {

@@ -16,10 +16,7 @@ const sample = `{"type":"user","sessionId":"s1","timestamp":"2026-09-30T10:00:00
 {"type":"assistant","sessionId":"s1","timestamp":"2026-09-30T10:00:05Z","message":{"id":"m3","model":"claude-sonnet-5-5","conte`
 
 func TestParse(t *testing.T) {
-	ev, err := Parse(strings.NewReader(sample))
-	if err != nil {
-		t.Fatal(err)
-	}
+	ev := Parse([]byte(sample))
 	kinds := []Kind{Prompt, Text, ToolUse, ToolResult, Text}
 	if len(ev) != len(kinds) {
 		t.Fatalf("got %d events, want %d: %+v", len(ev), len(kinds), ev)
@@ -36,8 +33,8 @@ func TestParse(t *testing.T) {
 		t.Errorf("bad tool result: %+v", ev[3])
 	}
 	// 1M input at $2 + 100k output at $10 = $3; the duplicated m1 usage must not count.
-	if got := SessionCost(ev); math.Abs(got-3) > 1e-9 {
-		t.Errorf("cost %v, want 3", got)
+	if got, priced := SessionCost(ev); math.Abs(got-3) > 1e-9 || !priced {
+		t.Errorf("cost %v %v, want 3 true", got, priced)
 	}
 }
 
@@ -62,10 +59,16 @@ func TestKeyIgnoresFieldOrder(t *testing.T) {
 func TestCostPrefix(t *testing.T) {
 	u := Usage{Input: 1e6}
 	for model, want := range map[string]float64{
-		"claude-opus-5-5": 4, "claude-opus-5": 5, "claude-fable-5-1": 10, "claude-haiku-4-5-20251001": 1, "unknown": 2,
+		"claude-opus-5-5": 4, "claude-opus-5": 5, "claude-fable-5-1": 10, "claude-haiku-4-5-20251001": 1, "claude-new-model": 2,
 	} {
-		if got := Cost(model, u); got != want {
-			t.Errorf("%s: %v, want %v", model, got, want)
+		if got, ok := Cost(model, u); got != want || !ok {
+			t.Errorf("%s: %v %v, want %v true", model, got, ok, want)
 		}
+	}
+	if _, ok := Cost("gpt-5.5", u); ok {
+		t.Error("non-Anthropic model must be unpriced")
+	}
+	if _, ok := Cost("gpt-5.5", Usage{}); !ok {
+		t.Error("zero usage needs no price")
 	}
 }
