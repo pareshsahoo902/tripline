@@ -104,7 +104,7 @@ On each tool call, Claude Code runs `tripline hook` and passes it the session id
 - `tripline init` to install the hook for you
 - Warn-only mode for rules
 
-Issues and PRs welcome. See [docs/design.md](docs/design.md) for the design.
+Full documentation is in the [wiki](https://github.com/pareshsahoo902/tripline/wiki). Issues and PRs are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/design.md](docs/design.md).
 
 ## License
 
