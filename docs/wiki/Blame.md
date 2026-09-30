@@ -4,7 +4,7 @@
 tripline blame [--dir DIR] [--json] <file>
 ```
 
-For every agent edit to `<file>`, across all your local Claude Code sessions, `blame` shows:
+For every agent edit to `<file>`, across all your local Claude Code, Codex and Cursor sessions, `blame` shows:
 
 - **prompt**: the last thing you typed before the edit
 - **why**: the agent's last message or visible reasoning before the edit, within that same prompt
@@ -32,6 +32,7 @@ Edits are listed oldest first.
 
 ## Limits
 
-- Only edits made through the `Edit`, `MultiEdit`, `Write` and `NotebookEdit` tools are found. Changes made by shell commands (`sed -i`, `mv`, code generators) aren't attributed yet.
+- Edits made through shell commands are inferred from the command line and marked `(inferred)`, with the command as the change. tripline recognizes common commands, redirects, git operations, formatters and package managers. It can't see what scripts or code generators do internally.
+- Cursor records edits as the agent intended them, without results, so `FAILED` never shows for Cursor. Cursor times come from the transcript file.
 - Claude Code may prune old transcripts, and edits from pruned sessions can't be found.
 - When the agent's reasoning is hidden, `why` shows its last visible message, which can be empty.

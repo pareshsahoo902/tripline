@@ -6,13 +6,18 @@
 
 Guardrails and blame for AI coding agents. Local, single binary, no network.
 
-Coding agents such as Claude Code run long tool-call loops while you're not looking. tripline sits in that loop:
+Coding agents such as Claude Code and Codex run long tool-call loops while you're not looking. tripline sits in that loop:
 
-- **`tripline hook`** stops a bad tool call *before* it runs. It catches the agent re-running the same failing command, re-reading a file it already has, blowing through a cost budget, or running something destructive like `rm -rf ~`, `git push --force` or `curl … | sh`. The agent sees why the call was blocked and changes course.
-- **`tripline blame <file>`** answers "why did the agent change this?" For every agent edit to a file, it shows the prompt you gave, the agent's explanation right before the edit, and what changed.
+- **`tripline hook`** stops a bad tool call *before* it runs. It catches the agent re-running the same failing command, re-reading a file it already has, passing a cost budget, or running something destructive like `rm -rf ~`, `git push --force` or `curl … | sh`. Each rule can block the call, ask you, or just warn the agent.
+- **`tripline blame <file>`** answers "why did the agent change this?" For every agent edit to a file, including edits made through shell commands like `sed -i`, it shows the prompt you gave, the agent's explanation right before the edit, and what changed.
 - **`tripline scan`** replays a finished session: tool calls, errors, tokens, estimated cost, and every point where a rule would have fired.
 
-Currently supports **Claude Code** on Windows, macOS and Linux.
+| | Claude Code | Codex CLI | Cursor |
+|---|---|---|---|
+| `hook` (guard) | yes | yes (0.124+) | not yet |
+| `scan`, `blame` | yes | yes | yes |
+
+Windows, macOS and Linux.
 
 ```
 $ tripline blame internal/auth/token.go
@@ -37,74 +42,76 @@ scoop install tripline
 go install github.com/pareshsahoo902/tripline@latest
 ```
 
-Prebuilt binaries for Windows, macOS and Linux (amd64 and arm64) are on the [releases page](https://github.com/pareshsahoo902/tripline/releases). winget support is coming.
+Prebuilt binaries for Windows, macOS and Linux (amd64 and arm64) are on the [releases page](https://github.com/pareshsahoo902/tripline/releases).
 
 ## Set up the hook
 
-Add this to `~/.claude/settings.json` to guard every project, or to `.claude/settings.json` to guard one:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [{ "type": "command", "command": "tripline hook" }]
-      }
-    ]
-  }
-}
+```sh
+tripline init                   # Claude Code, all projects (~/.claude/settings.json)
+tripline init --agent codex     # Codex CLI (~/.codex/hooks.json)
+tripline init --project         # this project only
+tripline init --budget 5 --ask risky   # with rule flags
+tripline init --remove          # uninstall
 ```
 
-Restart Claude Code. When tripline blocks a call, Claude sees a message like this and adapts:
+`init` adds one `PreToolUse` entry and leaves the rest of the file untouched. It keeps a `.bak` copy of the previous version. Running it again updates the entry instead of adding a second one. Restart the agent afterwards. Codex asks you to trust new hooks before they run.
+
+When tripline blocks a call, the agent sees a message like this and adapts:
 
 ```
 tripline blocked this call (loop): this exact Bash call already ran 3 times with no file changes in between.
 It will give the same result. Change approach or ask the user.
 ```
 
+Prefer editing JSON yourself? See [Hook setup](https://github.com/pareshsahoo902/tripline/wiki/Hook-Setup) in the wiki.
+
 ## Rules
 
-| Rule | Blocks when | Default | Flag |
+| Rule | Fires when | Default | Flag |
 |---|---|---|---|
-| `loop` | The same tool call, with identical input, already ran N times and no file was edited in between | 3 | `--max-repeat N` |
-| `reread` | `Read` of the same file with the same arguments already happened N times, and the file wasn't edited since | 2 | `--max-rereads N` |
-| `budget` | Estimated session cost reached the limit | off | `--budget USD` |
-| `risky` | A `Bash`/`PowerShell` command matches a destructive pattern (see [rules.go](internal/rules/rules.go)) | on | `--no-risky` |
+| `loop` | The same tool call, with identical input, already ran N times and no file changed in between | 3 | `--max-repeat N` |
+| `reread` | `Read` of the same file with the same arguments already happened N times, and the file hasn't changed since | 2 | `--max-rereads N` |
+| `budget` | Estimated session cost passes a multiple of USD ($5, $10, $15, …) | off | `--budget USD` |
+| `risky` | A shell command matches a destructive pattern (see [rules.go](internal/rules/rules.go)) | on | `--no-risky` |
 
-Set a flag to `0` to turn a rule off. Flags go in the hook command, for example `"command": "tripline hook --budget 5 --max-repeat 4"`.
+Set a number to `0` to turn a rule off. "Changed" includes edits through shell commands such as `sed -i`, `>` redirects, `git checkout` or formatters.
 
-**Cost is an estimate.** It uses Anthropic API list prices. On a Pro or Max subscription, read it as "API-equivalent" usage, not money spent.
+**Actions.** By default every rule blocks. `--ask RULES` hands the decision to you instead, through the agent's permission prompt. `--warn RULES` lets the call run and tells the agent why it looks wrong. Both take a comma-separated list, for example `--ask risky --warn loop,reread`. Codex can't ask or warn from a hook, so with `--agent codex`, `ask` blocks and `warn` does nothing.
+
+**Cost is an estimate.** It uses Anthropic API list prices. On a Pro or Max subscription, read it as "API-equivalent" usage, not money spent. tripline has no prices for other providers' models (such as Codex's GPT models), so budget doesn't apply there and `scan` shows the cost as n/a.
 
 **tripline fails open.** If anything goes wrong inside tripline (unreadable transcript, unexpected input), it allows the call. A bug in tripline never stalls your agent.
 
 ## Commands
 
 ```
-tripline hook   [--max-repeat N] [--max-rereads N] [--budget USD] [--no-risky]
-tripline scan   [same flags] [--dir DIR] [transcript.jsonl]   # default: most recent session
+tripline init   [--agent claude|codex] [--project] [--remove] [rule flags]
+tripline hook   [--agent claude|codex] [rule flags]
+tripline scan   [rule flags] [--dir DIR] [transcript.jsonl]   # default: most recent session
 tripline blame  [--dir DIR] [--json] <file>
 tripline version
+
+rule flags: --max-repeat N  --max-rereads N  --budget USD  --no-risky  --ask RULES  --warn RULES
 ```
 
-`--dir` defaults to `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects` when that variable is set.
+`scan` and `blame` look in `~/.claude/projects`, `~/.codex/sessions` and `~/.cursor/projects` (honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`), or only in `--dir`.
 
-`blame` searches every local session. It shows edits made through the `Edit`, `MultiEdit`, `Write` and `NotebookEdit` tools. Changes the agent made through shell commands (`sed -i`, `mv`, and so on) aren't attributed yet.
+Shell-command edits in `blame` are marked `(inferred)`. They come from a heuristic that recognizes common commands, redirects, git operations, formatters and package managers. It can't see what scripts do internally.
 
 ## How it works
 
-Claude Code writes each session as JSONL under `~/.claude/projects/<project>/<session>.jsonl`. tripline parses that file on every invocation. It never modifies it, and it never sends anything over the network.
+Each agent writes its session as JSONL on your disk. tripline parses that file on every invocation. It never modifies transcripts, and it never sends anything over the network.
 
-On each tool call, Claude Code runs `tripline hook` and passes it the session id, transcript path and pending tool call on stdin. tripline evaluates the rules against the session history. It exits `2` with a reason on stderr to block the call, or `0` to allow it.
+On each tool call, the agent runs `tripline hook` and passes it the session id, transcript path and pending tool call on stdin. tripline evaluates the rules against the session history. It exits `2` with a reason on stderr to block the call. To ask or warn, it prints a JSON response. Otherwise it exits `0` to allow the call.
 
 ## Roadmap
 
-- Other agents: Codex CLI, Cursor, opencode
-- `blame` for shell-command edits
-- `tripline init` to install the hook for you
-- Warn-only mode for rules
+- Cursor hook (read-only support is in)
+- opencode (its sessions live in SQLite since v1.2)
+- winget
+- A pre-commit check that runs `blame` over staged files
 
-Full documentation is in the [wiki](https://github.com/pareshsahoo902/tripline/wiki). Issues and PRs are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/design.md](docs/design.md).
+Full documentation is in the [wiki](https://github.com/pareshsahoo902/tripline/wiki). Release notes are in [CHANGELOG.md](CHANGELOG.md). Issues and PRs are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/design.md](docs/design.md).
 
 ## License
 

@@ -8,7 +8,12 @@ It does three things:
 - **Explain** (`tripline blame <file>`): shows why the agent changed a file, with the prompt and the agent's own explanation for each edit.
 - **Audit** (`tripline scan`): summarizes a finished session and shows where the rules would have fired.
 
-Supported today: **Claude Code** on Windows, macOS and Linux.
+Supported today, on Windows, macOS and Linux:
+
+| | Claude Code | Codex CLI | Cursor |
+|---|---|---|---|
+| `hook` (guard) | yes | yes (0.124+) | not yet |
+| `scan`, `blame` | yes | yes | yes |
 
 ## Start here
 
