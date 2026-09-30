@@ -1,0 +1,68 @@
+version: 2
+
+builds:
+  - env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+homebrew_casks:
+  - name: tripline
+    repository:
+      owner: pareshsahoo902
+      name: homebrew-tap
+      token: "{{ .Env.PACKAGES_TOKEN }}"
+    homepage: https://github.com/pareshsahoo902/tripline
+    description: Guardrails and blame for AI coding agent sessions
+    license: MIT
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tripline"]
+          end
+
+scoops:
+  - repository:
+      owner: pareshsahoo902
+      name: scoop-bucket
+      token: "{{ .Env.PACKAGES_TOKEN }}"
+    homepage: https://github.com/pareshsahoo902/tripline
+    description: Guardrails and blame for AI coding agent sessions
+    license: MIT
+
+winget:
+  - name: tripline
+    # Opens a PR against microsoft/winget-pkgs. Enable once a fork exists.
+    skip_upload: true
+    publisher: Paresh Kumar Sahoo
+    short_description: Guardrails and blame for AI coding agent sessions
+    license: MIT
+    homepage: https://github.com/pareshsahoo902/tripline
+    publisher_url: https://github.com/pareshsahoo902
+    repository:
+      owner: pareshsahoo902
+      name: winget-pkgs
+      token: "{{ .Env.PACKAGES_TOKEN }}"
+      branch: "tripline-{{.Version}}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master

@@ -1,0 +1,42 @@
+name: Bug report
+description: Something doesn't work, or a rule blocked a call it shouldn't have
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the full tripline message if a call was blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tripline version
+      description: Output of `tripline version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and version
+      placeholder: Claude Code 2.1.x
+  - type: textarea
+    id: hook
+    attributes:
+      label: Hook command
+      description: The `command` from your settings.json hook entry.
+      render: json
